@@ -1,0 +1,241 @@
+---
+title: "Assessment 3"
+output:
+  html_document: default
+  word_document: default
+---
+
+# Paul J Cronin (z5330951)
+
+## Part 1 - Code works with no errors
+
+(I hope so!)
+
+## Part 2 - Load dataset and remove NA data
+
+```{r}
+raw_data <- read.csv("winequality-red.csv",header=TRUE,fill=FALSE);
+wine_data <- na.omit(raw_data);
+```
+
+## Part 3 - Implement "good" response variable
+
+```{r}
+wine_data$quality <- ifelse(test = wine_data$quality>6.5,"yes"=1,"no"=0)
+#wine_data$quality <- ifelse(test = wine_data$quality>6.5,yes="good",no="bad")
+wine_data$quality <- as.factor(wine_data$quality)
+```
+
+## Part 4 - Frequentist Analysis & Significant Coefficients
+
+```{r}
+obj_log <- glm(quality~., data = wine_data, family = binomial(link="logit"))
+obj_log$coefficients
+```
+
+## Part 5 - Fix covariates at their mean and vary total sulfur dioxide
+
+```{r}
+N=101
+covariate_means <- colMeans(wine_data[,1:11])
+
+from = min(wine_data$total.sulfur.dioxide)
+to = max(wine_data$total.sulfur.dioxide)
+tsd=seq(from=from, to=to, length.out=N )
+
+prob <- c()
+for(j in 1:N)
+{
+  covariate_means[7]=tsd[j]
+  logits = covariate_means %*% obj_log$coefficients[2:12] + obj_log$coefficients[1]
+  prob[j]=exp(logits)/(1 + exp(logits))
+}
+
+plot(tsd,prob,type="l",col='blue',lwd=2, xlab = "Total Sulfur Dioxide", ylab="Probabiity of good wine",
+     main="Part 5 - Probability of good wine vs total sulfur dioxide")
+```
+
+# Part 6 Perform a Bayesian analysis of the logistic model for the dataset
+
+## Write an function for the log posterior distribution.
+
+```{r}
+# my version
+lpost.LR <- function(beta,x,y)
+  {
+  eta <- as.numeric(x %*% beta)  
+  logp <- ifelse(eta < 0, eta - log1p(exp(eta)), - log1p(exp(- eta)))
+  logq <- ifelse(eta < 0, - log1p(exp(eta)), - eta - log1p(exp(- eta)))
+  logl <- sum(logp[y == 1]) + sum(logq[y == 0])
+  lprior <- sum(dnorm(beta,0,10,log=T)) #from notes
+#  lprior <- sum(dbeta(beta,1,1), log=TRUE) #my thought
+#  lprior <- -sum(beta^2) / 8 #from Larissa
+  return(logl + lprior)
+  }
+```
+
+## Fix the number of simulation at 10\^4
+
+```{r}
+S <- 40000
+#S <- 10000
+# Please note, at different times, I have used 10,000 and 40,000, to understand
+# how the chains evolved over a longer period.  Right now this is set at 40,000
+# From the comments, I hope that will be OK.
+```
+
+## Choose 4 different initialisations for the coefficients.
+
+```{r}
+# the coefficients of the GLM analysis
+initX1 <- unname(obj_log$coefficients)
+# the intercept from the GLM, the rest are the median wine values
+initX2 <- c(obj_log$coefficients[1],unname(apply(wine_data[,1:11],2,median)))
+# a zero intercept, the rest being the GLM coefficients
+initX3 <- c(0,obj_log$coefficients[2:12])
+# the intercept from the GLM, the rest are zero values
+initX4 <- c(obj_log$coefficients[1],rep(0,11))
+```
+
+## For each initialisation, run a Metropolis--Hastings algorithm.
+
+```{r}
+
+X1=cbind(rep(1,nrow(wine_data)),wine_data[,1:11]) #the known data
+X <- X1[1,]
+y <- wine_data$quality[1]
+
+for(i in 1:nrow(X1))
+{
+  if(sum(is.na(X1[i,]))==0){  # can probably remove this
+    X <- rbind(X,X1[i,])
+    y <- c(y,wine_data$quality[i])
+  }  
+}
+
+beta_mat <- matrix(NA,nrow=S,ncol=12) #creates empty master chain
+beta_mat1 <- beta_mat2 <- beta_mat3 <- beta_mat4 <- beta_mat #creates four
+beta_mat1[1,] <- as.numeric(initX1) #populates first element
+beta_mat2[1,] <- as.numeric(initX2) #populates first element
+beta_mat3[1,] <- as.numeric(initX3) #populates first element
+beta_mat4[1,] <- as.numeric(initX4) #populates first element
+
+library(mvtnorm)
+X <- unname(as.matrix(X))
+Omega_prop <- solve(t(X) %*% X)
+k <- ncol(beta_mat2)
+
+for(init in 1:4){
+  acc <- 0
+  #for each initialization, we generate the beta_mat
+  if(init==1){beta_mat0<-beta_mat1}
+  if(init==2){beta_mat0<-beta_mat2}
+  if(init==3){beta_mat0<-beta_mat3}
+  if(init==4){beta_mat0<-beta_mat4}
+
+    for(iter in 2:S)
+    {
+    # 1. Propose a new set of values
+    beta_star <- rmvnorm(1,beta_mat0[iter-1,],0.5*Omega_prop)
+    
+    # 2. Compute the posterior density on the proposed value and on the old value
+    newpost=lpost.LR(t(beta_star),X,y)
+    oldpost=lpost.LR(matrix(beta_mat0[iter-1,],ncol=1),X,y)
+    
+    # 3. Acceptance step
+    if(runif(1,0,1)>exp(newpost-oldpost)){beta_mat0[iter,]=beta_mat0[iter-1,]}
+    else
+      {
+        beta_mat0[iter,]=beta_star
+        if (init==1){acc=acc+1}
+    }
+  }
+  if(init==1){
+    beta_mat1<-beta_mat0
+    print(acc/iter)
+  }
+  if(init==2){beta_mat2<-beta_mat0}
+  if(init==3){beta_mat3<-beta_mat0}
+  if(init==4){beta_mat4<-beta_mat0}
+}
+```
+
+## Plot the chains for each coefficients (the 4 chains on the same plot) and comment.
+
+```{r}
+coeff_names <-names(obj_log$coefficients)
+
+for(coeff in 1:12){
+  par(oma=c(0, 0, 0, 11))
+
+  lab<-coeff_names[i]
+  lo=min(beta_mat1[,coeff],beta_mat2[,coeff],beta_mat3[,coeff],beta_mat4[,coeff])
+  hi=max(beta_mat1[,coeff],beta_mat2[,coeff],beta_mat3[,coeff],beta_mat4[,coeff])
+  plot(beta_mat1[,coeff],type="l",col='black', ylab='Value', ylim=c(lo,hi))
+  title(main = tools::toTitleCase(sub('\\.', ' ', sub('\\.', ' ', coeff_names[coeff]))))
+  lines(beta_mat2[,coeff],type="l",col='blue')
+  lines(beta_mat3[,coeff],type="l",col='red')
+  lines(beta_mat4[,coeff],type="l",col='yellow')
+  legend(par('usr')[2], par('usr')[4], bty='n', xpd=NA,
+       legend=c("GLM coefficients", "GLM intercept w. median values", "Zero intercept w. GLM coefficients",
+                 "GLM intercept w. median values"), col=c("black", "blue", "red", "yellow"), 
+        lwd=c(1,1,1,1), cex=0.8,lty=c(1,1,1,1,1,1))
+}
+```
+
+# Part 7 - Approximate the posterior predictive distribution
+
+```{r}
+x_new <- c(1,7.5, 0.6,0.0,1.7,0.085,5.0,45.0,0.9965,3.40,0.63,12)
+y_new <-c(0)
+p_new <-c(0)
+
+for(iter in 2:S)
+{
+  p_new[iter] <- exp(sum(beta_mat1[iter,] * x_new) ) / (1 + exp(sum(beta_mat1[iter,] * x_new) ))
+  y_new[iter] <- rbinom(1,1,prob=p_new[iter])
+}
+table(y_new)
+plot(y_new,col='blue', xlab = "Index", ylab="y_new Probabiity",
+     main="Part 7 - Evolving Posterior Predictive Probability")
+plot(p_new,type='l',col='blue',lwd=2, xlab = "Index", ylab="p_new Probabiity",
+     main="Part 7 - Evolving Posterior Predictive Probability")
+counts <- table(y_new)
+barplot(counts, main="Posterior Predictive Distribution", xlab="0 or 1",
+        col=c("blue","red"),legend = rownames(counts), beside=TRUE, names.arg=counts)
+
+acc/iter
+```
+
+# Part 8 - Use Metrop() function
+
+```{r}
+library(mcmc)
+set.seed(42)
+beta.init <- as.numeric(coefficients(obj_log))
+#out <- metrop(lpost.LR, initial=beta.init, x=beta_mat1[1,],y=1,nbatch=S, scale = )
+out <- metrop(lpost.LR, initial=beta.init, x=beta_mat1[1,],y=1,nbatch=S, scale=unname(obj_log$coefficients)/14)
+
+out$accept
+
+for(coeff in 1:12){
+  par(oma=c(0, 0, 0, 11))
+
+  lab<-coeff_names[i]
+  lo=min(beta_mat1[,coeff],beta_mat2[,coeff],beta_mat3[,coeff],beta_mat4[,coeff],ts(out$batch[,coeff]))
+  hi=max(beta_mat1[,coeff],beta_mat2[,coeff],beta_mat3[,coeff],beta_mat4[,coeff],ts(out$batch[,coeff]))
+
+  plot(ts(out$batch[,coeff]),type="l",col='cyan', ylab='Value', ylim=c(lo,hi),lwd=2)
+  title(main = tools::toTitleCase(sub('\\.', ' ', sub('\\.', ' ', coeff_names[coeff]))))
+  lines(beta_mat1[,coeff],type="l",col='black',lty=2, lwd=1)
+  lines(beta_mat2[,coeff],type="l",col='blue',lty=2, lwd=1)
+  lines(beta_mat3[,coeff],type="l",col='red',lty=2, lwd=1)
+  lines(beta_mat4[,coeff],type="l",col='yellow',lty=2, lwd=1)
+
+legend(par('usr')[2], par('usr')[4], bty='n', xpd=NA,
+       legend=c("metrop()", "GLM coefficients", "GLM intercept w. median values", "Zero intercept w. GLM coefficients",
+                 "GLM intercept w. median values"), col=c("cyan","black", "blue", "red", "yellow"), 
+        lwd=c(2,1,1,1,1), cex=0.8,lty=c(1,1,1,1,1,1))
+}
+
+```
